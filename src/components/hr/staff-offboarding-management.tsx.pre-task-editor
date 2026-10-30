@@ -1,0 +1,815 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  AlertCircle,
+  ArrowDownRight,
+  ArrowUpRight,
+  CalendarDays,
+  CheckCircle2,
+  ClipboardList,
+  LoaderCircle,
+  Plus,
+  RefreshCw,
+  Search,
+  ShieldAlert,
+  UserRound,
+  X,
+} from "lucide-react";
+
+type StaffMember = {
+  id: string;
+  employeeNumber: string;
+  firstName: string;
+  middleName: string | null;
+  lastName: string;
+  jobTitle: string | null;
+  department: string | null;
+  status: string;
+};
+
+type OffboardingWorkflowData = {
+  tasks: Array<{
+    id: string;
+    title: string;
+    category: string;
+    status: string;
+    required: boolean;
+    dueDate: string | null;
+    evidenceRef: string | null;
+    exceptionReason: string | null;
+  }>;
+  revocations: Array<{
+    id: string;
+    accessType: string;
+    target: string;
+    status: string;
+    required: boolean;
+    verifiedAt: string | null;
+    outcomeNotes: string | null;
+  }>;
+  settlement: {
+    id: string;
+    status: string;
+    currency: string;
+    paymentDate: string | null;
+    paymentReference: string | null;
+    paymentEvidenceRef: string | null;
+    items: Array<{
+      id: string;
+      itemType: string;
+      description: string;
+      amount: string | number;
+      currency: string;
+    }>;
+  } | null;
+};
+
+type OffboardingRecord = {
+  id: string;
+  staffProfileId: string;
+  exitType: string;
+  initiator: string;
+  status: string;
+  reasonCategory: string | null;
+  reasonNotes: string | null;
+  noticeRequired: boolean;
+  noticeGiven: boolean;
+  noticeDate: string | null;
+  proposedLastDay: string | null;
+  confirmedLastDay: string | null;
+  effectiveTerminationDate: string | null;
+  disputePending: boolean;
+  investigationPending: boolean;
+  exitInterviewCompleted: boolean;
+  handoverConfirmed: boolean;
+  createdAt: string;
+  updatedAt: string;
+  staffProfile: StaffMember;
+};
+
+const exitTypes = [
+  ["RESIGNATION", "Resignation"],
+  ["RETIREMENT", "Retirement"],
+  ["FIXED_TERM_END", "Fixed-term contract end"],
+  ["REDUNDANCY", "Redundancy"],
+  ["DISMISSAL", "Dismissal"],
+  ["PROBATION_TERMINATION", "Probation termination"],
+  ["MUTUAL_AGREEMENT", "Mutual agreement"],
+  ["DEATH", "Death"],
+  ["OTHER", "Other"],
+] as const;
+
+const statuses = [
+  "DRAFT",
+  "SUBMITTED",
+  "UNDER_REVIEW",
+  "APPROVED",
+  "REJECTED",
+  "WITHDRAWN",
+  "COMPLETED",
+] as const;
+
+const inputClass =
+  "h-10 w-full rounded-xl border border-border bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-4 focus:ring-primary/10 disabled:opacity-60";
+const buttonClass =
+  "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50";
+const secondaryButtonClass =
+  "inline-flex min-h-9 items-center justify-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
+const panelClass = "rounded-2xl border border-border bg-card shadow-sm";
+
+function employeeName(staff: StaffMember) {
+  return [staff.firstName, staff.middleName, staff.lastName]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function formatDate(value: string | null | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(date);
+}
+
+function label(value: string) {
+  return value
+    .toLowerCase()
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function statusClasses(status: string) {
+  switch (status) {
+    case "COMPLETED":
+      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    case "APPROVED":
+      return "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300";
+    case "REJECTED":
+      return "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300";
+    case "UNDER_REVIEW":
+      return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    default:
+      return "border-border bg-muted text-muted-foreground";
+  }
+}
+
+export function StaffOffboardingManagement({ schoolId }: { schoolId: string }) {
+  const [staff, setStaff] = useState<StaffMember[]>([]);
+  const [records, setRecords] = useState<OffboardingRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [showCreate, setShowCreate] = useState(false);
+  const [actionRecord, setActionRecord] = useState<OffboardingRecord | null>(null);
+  const [actionType, setActionType] = useState("");
+  const [actionDate, setActionDate] = useState("");
+  const [actionReason, setActionReason] = useState("");
+  const [selectedStaffId, setSelectedStaffId] = useState("");
+  const [exitType, setExitType] = useState("RESIGNATION");
+  const [initiator, setInitiator] = useState("EMPLOYEE");
+  const [reasonCategory, setReasonCategory] = useState("");
+  const [reasonNotes, setReasonNotes] = useState("");
+  const [noticeRequired, setNoticeRequired] = useState(false);
+  const [noticeGiven, setNoticeGiven] = useState(false);
+  const [noticeDate, setNoticeDate] = useState("");
+  const [proposedLastDay, setProposedLastDay] = useState("");
+  const [disputePending, setDisputePending] = useState(false);
+  const [investigationPending, setInvestigationPending] = useState(false);
+  const [rehireEligible, setRehireEligible] = useState("unset");
+  const [workflowRecord, setWorkflowRecord] = useState<OffboardingRecord | null>(null);
+  const [workflowData, setWorkflowData] = useState<OffboardingWorkflowData | null>(null);
+  const [workflowLoading, setWorkflowLoading] = useState(false);
+  const [workflowError, setWorkflowError] = useState("");
+
+  const apiBase = `/api/schools/${encodeURIComponent(schoolId)}`;
+
+  const loadData = useCallback(async (initial = false) => {
+    try {
+      const [staffResponse, recordsResponse] = await Promise.all([
+        fetch(`${apiBase}/staff?page=1&pageSize=100`, { cache: "no-store" }),
+        fetch(`${apiBase}/offboarding`, { cache: "no-store" }),
+      ]);
+      const [staffData, recordsData] = await Promise.all([
+        staffResponse.json(),
+        recordsResponse.json(),
+      ]);
+      if (!staffResponse.ok) {
+        throw new Error(staffData.error || "Unable to load the staff directory.");
+      }
+      if (!recordsResponse.ok) {
+        throw new Error(recordsData.error || "Unable to load offboarding records.");
+      }
+      setError("");
+      setStaff(Array.isArray(staffData.staff) ? staffData.staff : []);
+      setRecords(Array.isArray(recordsData.records) ? recordsData.records : []);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to load offboarding data.");
+    } finally {
+      if (initial) setLoading(false);
+    }
+  }, [apiBase]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void loadData(true);
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [loadData]);
+
+  const counts = useMemo(() => {
+    const result: Record<string, number> = {};
+    for (const status of statuses) result[status] = 0;
+    for (const record of records) result[record.status] = (result[record.status] ?? 0) + 1;
+    return result;
+  }, [records]);
+
+  const visibleRecords = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return records.filter((record) => {
+      if (statusFilter !== "ALL" && record.status !== statusFilter) return false;
+      if (!query) return true;
+      const staffMember = record.staffProfile;
+      return [
+        employeeName(staffMember),
+        staffMember.employeeNumber,
+        staffMember.jobTitle ?? "",
+        staffMember.department ?? "",
+        record.exitType,
+        record.status,
+      ].some((value) => value.toLowerCase().includes(query));
+    });
+  }, [records, search, statusFilter]);
+
+  const eligibleStaff = useMemo(() => {
+    const activeCaseStaff = new Set(
+      records
+        .filter((record) =>
+          ["DRAFT", "SUBMITTED", "UNDER_REVIEW", "APPROVED"].includes(record.status),
+        )
+        .map((record) => record.staffProfileId),
+    );
+    return staff.filter(
+      (member) => member.status !== "TERMINATED" && !activeCaseStaff.has(member.id),
+    );
+  }, [records, staff]);
+
+  async function readError(response: Response, fallback: string) {
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || fallback);
+    return data;
+  }
+
+  async function createCase(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      const payload = {
+        staffProfileId: selectedStaffId,
+        exitType,
+        initiator,
+        reasonCategory: reasonCategory.trim() || undefined,
+        reasonNotes: reasonNotes.trim() || undefined,
+        noticeRequired,
+        noticeGiven,
+        disputePending,
+        investigationPending,
+        noticeDate: noticeDate || undefined,
+        proposedLastDay: proposedLastDay || undefined,
+      };
+      const response = await fetch(`${apiBase}/offboarding`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      await readError(response, "Unable to create the offboarding case.");
+      setShowCreate(false);
+      setSelectedStaffId("");
+      setReasonCategory("");
+      setReasonNotes("");
+      setNoticeRequired(false);
+      setNoticeGiven(false);
+      setNoticeDate("");
+      setProposedLastDay("");
+      setDisputePending(false);
+      setInvestigationPending(false);
+      setNotice("Offboarding case created as a draft.");
+      await loadData();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to create the case.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function loadWorkflow(record: OffboardingRecord) {
+    setWorkflowRecord(record);
+    setWorkflowData(null);
+    setWorkflowError("");
+    setWorkflowLoading(true);
+    try {
+      const base = `${apiBase}/offboarding/${encodeURIComponent(record.id)}`;
+      const [tasksResponse, accessResponse, settlementResponse] = await Promise.all([
+        fetch(`${base}/tasks`, { cache: "no-store" }),
+        fetch(`${base}/access-revocations`, { cache: "no-store" }),
+        fetch(`${base}/settlement`, { cache: "no-store" }),
+      ]);
+
+      const [tasksData, accessData, settlementData] = await Promise.all([
+        tasksResponse.json().catch(() => ({})),
+        accessResponse.json().catch(() => ({})),
+        settlementResponse.json().catch(() => ({})),
+      ]);
+
+      if (!tasksResponse.ok) throw new Error(tasksData.error || "Unable to load offboarding tasks.");
+      if (!accessResponse.ok) throw new Error(accessData.error || "Unable to load access revocations.");
+      if (!settlementResponse.ok && settlementResponse.status !== 404) {
+        throw new Error(settlementData.error || "Unable to load final settlement.");
+      }
+
+      const rawSettlement = settlementResponse.ok ? settlementData.settlement : null;
+      setWorkflowData({
+        tasks: Array.isArray(tasksData.tasks) ? tasksData.tasks : [],
+        revocations: Array.isArray(accessData.revocations) ? accessData.revocations : [],
+        settlement: rawSettlement && typeof rawSettlement === "object"
+          ? {
+              id: rawSettlement.id,
+              status: rawSettlement.status,
+              currency: rawSettlement.currency,
+              paymentDate: rawSettlement.paymentDate ?? null,
+              paymentReference: rawSettlement.paymentReference ?? null,
+              paymentEvidenceRef: rawSettlement.paymentEvidenceRef ?? null,
+              items: Array.isArray(rawSettlement.items) ? rawSettlement.items : [],
+            }
+          : null,
+      });
+    } catch (caught) {
+      setWorkflowError(caught instanceof Error ? caught.message : "Unable to load workflow details.");
+    } finally {
+      setWorkflowLoading(false);
+    }
+  }
+
+  function openAction(record: OffboardingRecord, action: string) {
+    setActionRecord(record);
+    setActionType(action);
+    setActionDate(record.confirmedLastDay?.slice(0, 10) ?? record.proposedLastDay?.slice(0, 10) ?? "");
+    setActionReason("");
+    setRehireEligible("unset");
+    setError("");
+    setNotice("");
+  }
+
+  async function runAction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!actionRecord || !actionType) return;
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      const payload: Record<string, string | boolean> = { action: actionType };
+      if (actionType === "approve") {
+        if (!actionDate) throw new Error("Enter the confirmed last working day.");
+        payload.confirmedLastDay = actionDate;
+        if (rehireEligible !== "unset") payload.rehireEligible = rehireEligible === "yes";
+      }
+      if (actionType === "reject") {
+        if (actionReason.trim().length < 3) {
+          throw new Error("Provide a rejection reason of at least 3 characters.");
+        }
+        payload.rejectionReason = actionReason.trim();
+      }
+      const response = await fetch(
+        `${apiBase}/offboarding/${encodeURIComponent(actionRecord.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+      await readError(response, `Unable to ${actionType} this case.`);
+      setActionRecord(null);
+      setNotice(`Case ${actionType === "complete" ? "completed" : `${actionType}d`} successfully.`);
+      await loadData();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to update the case.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  return (
+    <div className="w-full space-y-6 px-4 py-5 sm:px-6 lg:px-8">
+      <div className="flex flex-col justify-between gap-4 border-b border-border pb-5 sm:flex-row sm:items-end">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+            People &amp; HR / Employment &amp; Insights
+          </p>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Offboarding</h1>
+          <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+            Manage employee exits through a documented review, approval and access-revocation workflow.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={secondaryButtonClass} onClick={() => void loadData()} disabled={loading || saving}>
+            <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+          <button type="button" className={buttonClass} onClick={() => { setError(""); setNotice(""); setShowCreate(true); }}>
+            <Plus className="size-4" />
+            New case
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div role="alert" className="flex items-start gap-3 rounded-xl border border-red-500/30 bg-red-500/5 p-4 text-sm text-red-700 dark:text-red-300">
+          <AlertCircle className="mt-0.5 size-5 shrink-0" />
+          <p>{error}</p>
+          <button type="button" className="ml-auto" aria-label="Dismiss error" onClick={() => setError("")}><X className="size-4" /></button>
+        </div>
+      )}
+      {notice && (
+        <div role="status" className="flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-sm text-emerald-700 dark:text-emerald-300">
+          <CheckCircle2 className="size-5 shrink-0" />{notice}
+          <button type="button" className="ml-auto" aria-label="Dismiss message" onClick={() => setNotice("")}><X className="size-4" /></button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <div className={`${panelClass} p-4`}>
+          <div className="flex items-center justify-between text-muted-foreground"><span className="text-sm">All cases</span><ClipboardList className="size-4" /></div>
+          <p className="mt-3 text-3xl font-semibold tabular-nums">{records.length}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Latest 100 records</p>
+        </div>
+        <div className={`${panelClass} p-4`}>
+          <div className="flex items-center justify-between text-muted-foreground"><span className="text-sm">Awaiting review</span><ArrowDownRight className="size-4" /></div>
+          <p className="mt-3 text-3xl font-semibold tabular-nums">{(counts.SUBMITTED ?? 0) + (counts.UNDER_REVIEW ?? 0)}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Submitted or under review</p>
+        </div>
+        <div className={`${panelClass} p-4`}>
+          <div className="flex items-center justify-between text-muted-foreground"><span className="text-sm">Approved</span><CalendarDays className="size-4" /></div>
+          <p className="mt-3 text-3xl font-semibold tabular-nums">{counts.APPROVED ?? 0}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Pending final completion</p>
+        </div>
+        <div className={`${panelClass} p-4`}>
+          <div className="flex items-center justify-between text-muted-foreground"><span className="text-sm">Completed</span><CheckCircle2 className="size-4" /></div>
+          <p className="mt-3 text-3xl font-semibold tabular-nums">{counts.COMPLETED ?? 0}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Exit workflow completed</p>
+        </div>
+      </div>
+
+      <section className={`${panelClass} overflow-hidden`}>
+        <div className="flex flex-col gap-3 border-b border-border p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 className="font-semibold">Exit cases</h2>
+            <p className="mt-1 text-xs text-muted-foreground">{visibleRecords.length} matching records</p>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="relative min-w-0 sm:min-w-64">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input aria-label="Search offboarding cases" className={`${inputClass} pl-9`} placeholder="Search employee, ID, department…" value={search} onChange={(event) => setSearch(event.target.value)} />
+            </div>
+            <select aria-label="Filter by status" className={`${inputClass} sm:w-48`} value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+              <option value="ALL">All statuses</option>
+              {statuses.map((status) => <option key={status} value={status}>{label(status)}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center gap-3 p-14 text-sm text-muted-foreground"><LoaderCircle className="size-5 animate-spin" />Loading offboarding records…</div>
+        ) : visibleRecords.length === 0 ? (
+          <div className="flex flex-col items-center px-5 py-14 text-center">
+            <div className="flex size-12 items-center justify-center rounded-2xl bg-muted"><ClipboardList className="size-6 text-muted-foreground" /></div>
+            <h3 className="mt-4 font-semibold">No offboarding cases found</h3>
+            <p className="mt-1 max-w-md text-sm text-muted-foreground">Create a case to start a documented employee exit, or adjust your search and status filters.</p>
+            <button type="button" className={`${secondaryButtonClass} mt-4`} onClick={() => { setSearch(""); setStatusFilter("ALL"); }}>Clear filters</button>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[920px] text-left text-sm">
+              <thead className="bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Employee</th>
+                  <th className="px-4 py-3 font-medium">Exit type</th>
+                  <th className="px-4 py-3 font-medium">Status</th>
+                  <th className="px-4 py-3 font-medium">Proposed last day</th>
+                  <th className="px-4 py-3 font-medium">Created</th>
+                  <th className="px-4 py-3 font-medium">Workflow actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {visibleRecords.map((record) => {
+                  const canComplete = record.status === "APPROVED"
+                    && Boolean(record.confirmedLastDay)
+                    && record.confirmedLastDay!.slice(0, 10) <= today
+                    && !record.disputePending
+                    && !record.investigationPending;
+                  return (
+                    <tr key={record.id} className="align-top transition hover:bg-muted/20">
+                      <td className="px-4 py-4">
+                        <div className="flex items-start gap-3">
+                          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary"><UserRound className="size-4" /></div>
+                          <div>
+                            <p className="font-semibold">{employeeName(record.staffProfile)}</p>
+                            <p className="mt-0.5 text-xs text-muted-foreground">{record.staffProfile.employeeNumber}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">{record.staffProfile.jobTitle || "Role not set"}{record.staffProfile.department ? ` · ${record.staffProfile.department}` : ""}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-4">
+                        <p>{label(record.exitType)}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{label(record.initiator)} initiated</p>
+                        {record.noticeRequired && <p className="mt-1 text-xs text-muted-foreground">Notice: {record.noticeGiven ? "given" : "not recorded"}</p>}
+                      </td>
+                      <td className="px-4 py-4"><span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${statusClasses(record.status)}`}>{label(record.status)}</span>
+                        {(record.disputePending || record.investigationPending) && <p className="mt-2 flex items-center gap-1 text-xs text-amber-700 dark:text-amber-300"><ShieldAlert className="size-3.5" />{record.disputePending && record.investigationPending ? "Dispute and investigation" : record.disputePending ? "Dispute pending" : "Investigation pending"}</p>}
+                      </td>
+                      <td className="px-4 py-4">{formatDate(record.proposedLastDay)}{record.confirmedLastDay && <p className="mt-1 text-xs text-muted-foreground">Confirmed: {formatDate(record.confirmedLastDay)}</p>}</td>
+                      <td className="px-4 py-4 text-muted-foreground">{formatDate(record.createdAt)}</td>
+                      <td className="px-4 py-4">
+                        <div className="flex max-w-64 flex-wrap gap-1.5">
+                          {record.status === "DRAFT" && <button type="button" className={secondaryButtonClass} onClick={() => openAction(record, "submit")}>Submit</button>}
+                          {record.status === "SUBMITTED" && <button type="button" className={secondaryButtonClass} onClick={() => openAction(record, "review")}>Start review</button>}
+                          {record.status === "UNDER_REVIEW" && <>
+                            <button type="button" className={buttonClass} onClick={() => openAction(record, "approve")}>Approve</button>
+                            <button type="button" className={secondaryButtonClass} onClick={() => openAction(record, "reject")}>Reject</button>
+                          </>}
+                          {["DRAFT", "SUBMITTED", "UNDER_REVIEW"].includes(record.status) && <button type="button" className={secondaryButtonClass} onClick={() => openAction(record, "withdraw")}>Withdraw</button>}
+                          <button type="button" className={secondaryButtonClass} onClick={() => void loadWorkflow(record)}>Open workflow</button>
+                          {record.status === "APPROVED" && <button type="button" className={buttonClass} disabled={!canComplete} title={!canComplete ? "Completion requires a confirmed date that has arrived and no pending dispute or investigation." : "Complete offboarding"} onClick={() => openAction(record, "complete")}>Complete</button>}
+                          {["COMPLETED", "REJECTED", "WITHDRAWN"].includes(record.status) && <span className="text-xs text-muted-foreground">No further actions</span>}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {workflowRecord && (
+        <section id="offboarding-workflow-panel" className={`${panelClass} overflow-hidden`}>
+          <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-primary">Case workflow</p>
+              <h2 className="mt-1 text-lg font-semibold">{employeeName(workflowRecord.staffProfile)}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {workflowRecord.staffProfile.employeeNumber} · {label(workflowRecord.status)}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" className={secondaryButtonClass} disabled={workflowLoading} onClick={() => void loadWorkflow(workflowRecord)}>
+                <RefreshCw className={`size-4 ${workflowLoading ? "animate-spin" : ""}`} />Refresh workflow
+              </button>
+              <button type="button" className={secondaryButtonClass} onClick={() => { setWorkflowRecord(null); setWorkflowData(null); setWorkflowError(""); }}>Close</button>
+            </div>
+          </div>
+
+          <div className="space-y-5 p-4 sm:p-5">
+            {workflowError && (
+              <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-700 dark:text-red-300">
+                {workflowError}
+              </div>
+            )}
+            {workflowLoading && (
+              <div className="flex items-center gap-2 py-5 text-sm text-muted-foreground">
+                <LoaderCircle className="size-4 animate-spin" />Loading tasks, access revocations, and settlement…
+              </div>
+            )}
+            {workflowData && !workflowLoading && (
+              <>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-xl border border-border p-3">
+                    <p className="text-xs text-muted-foreground">Required tasks</p>
+                    <p className="mt-1 text-xl font-semibold tabular-nums">
+                      {workflowData.tasks.filter((task) => task.required && (task.status === "COMPLETED" || (task.status === "WAIVED" && Boolean(task.exceptionReason?.trim())))).length}
+                      <span className="text-sm font-normal text-muted-foreground"> / {workflowData.tasks.filter((task) => task.required).length}</span>
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-border p-3">
+                    <p className="text-xs text-muted-foreground">Required access outcomes</p>
+                    <p className="mt-1 text-xl font-semibold tabular-nums">
+                      {workflowData.revocations.filter((item) => item.required && (item.status === "REVOKED" || item.status === "NOT_APPLICABLE") && Boolean(item.verifiedAt) && Boolean(item.outcomeNotes?.trim())).length}
+                      <span className="text-sm font-normal text-muted-foreground"> / {workflowData.revocations.filter((item) => item.required).length}</span>
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-border p-3">
+                    <p className="text-xs text-muted-foreground">Final settlement</p>
+                    <p className="mt-1 text-lg font-semibold">{workflowData.settlement ? label(workflowData.settlement.status) : "Not created"}</p>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="font-semibold">Clearance and handover tasks</h3>
+                    <span className="text-xs text-muted-foreground">{workflowData.tasks.length} tasks</span>
+                  </div>
+                  {workflowData.tasks.length === 0 ? (
+                    <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">No tasks were returned for this case. The case cannot be completed without required clearance tasks.</p>
+                  ) : (
+                    <div className="overflow-x-auto rounded-xl border border-border">
+                      <table className="w-full min-w-[620px] text-left text-sm">
+                        <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                          <tr><th className="px-3 py-2">Task</th><th className="px-3 py-2">Required</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Due</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          {workflowData.tasks.map((task) => (
+                            <tr key={task.id}>
+                              <td className="px-3 py-3">
+                                <p className="font-medium">{task.title}</p>
+                                <p className="mt-0.5 text-xs text-muted-foreground">{label(task.category)}</p>
+                                {task.evidenceRef && <p className="mt-1 break-all text-xs text-muted-foreground">Evidence: {task.evidenceRef}</p>}
+                                {task.status === "WAIVED" && task.exceptionReason && <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Exception: {task.exceptionReason}</p>}
+                              </td>
+                              <td className="px-3 py-3">{task.required ? "Yes" : "No"}</td>
+                              <td className="px-3 py-3">{label(task.status)}</td>
+                              <td className="px-3 py-3">{formatDate(task.dueDate)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <p className="mt-2 text-xs text-muted-foreground">Task updates require evidence to complete a task and a documented reason to block or waive one. Use the existing task API for those changes; this panel displays the persisted status.</p>
+                </div>
+
+                <div>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="font-semibold">Access revocation and verification</h3>
+                    <span className="text-xs text-muted-foreground">{workflowData.revocations.length} records</span>
+                  </div>
+                  {workflowData.revocations.length === 0 ? (
+                    <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">No access revocation requests exist. Record the applicable access types and verify their actual outcomes before completing the case.</p>
+                  ) : (
+                    <div className="overflow-x-auto rounded-xl border border-border">
+                      <table className="w-full min-w-[620px] text-left text-sm">
+                        <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                          <tr><th className="px-3 py-2">Access type</th><th className="px-3 py-2">Target</th><th className="px-3 py-2">Required</th><th className="px-3 py-2">Outcome</th><th className="px-3 py-2">Verified</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          {workflowData.revocations.map((item) => (
+                            <tr key={item.id}>
+                              <td className="px-3 py-3">{label(item.accessType)}</td>
+                              <td className="max-w-56 break-all px-3 py-3">{item.target}</td>
+                              <td className="px-3 py-3">{item.required ? "Yes" : "No"}</td>
+                              <td className="px-3 py-3">
+                                <p>{label(item.status)}</p>
+                                {item.outcomeNotes && <p className="mt-1 max-w-64 text-xs text-muted-foreground">{item.outcomeNotes}</p>}
+                              </td>
+                              <td className="px-3 py-3">{formatDate(item.verifiedAt)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <p className="mt-2 text-xs text-muted-foreground">A request is not proof of revocation. The status must reflect the verified outcome, with the server recording the verifier and timestamp.</p>
+                </div>
+
+                <div>
+                  <h3 className="mb-2 font-semibold">Final settlement</h3>
+                  {!workflowData.settlement ? (
+                    <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">No settlement exists yet. Create a draft settlement through the settlement endpoint, then add itemized amounts and follow the review and payment workflow.</p>
+                  ) : (
+                    <div className="rounded-xl border border-border p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="font-semibold">{label(workflowData.settlement.status)}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">Currency: {workflowData.settlement.currency} · {workflowData.settlement.items.length} line items</p>
+                        </div>
+                        <p className="text-sm font-semibold tabular-nums">
+                          {workflowData.settlement.items.reduce((sum, item) => sum + Number(item.amount || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {workflowData.settlement.currency}
+                        </p>
+                      </div>
+                      {workflowData.settlement.items.length > 0 && (
+                        <div className="mt-3 divide-y divide-border border-t border-border">
+                          {workflowData.settlement.items.map((item) => (
+                            <div key={item.id} className="flex flex-wrap justify-between gap-2 py-2 text-sm">
+                              <div><p className="font-medium">{item.description}</p><p className="text-xs text-muted-foreground">{label(item.itemType)}</p></div>
+                              <p className="tabular-nums">{Number(item.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {item.currency}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <p className="mt-3 text-xs text-muted-foreground">
+                        Payment date: {formatDate(workflowData.settlement.paymentDate)} · Reference: {workflowData.settlement.paymentReference || "Not recorded"} · Payment evidence: {workflowData.settlement.paymentEvidenceRef || "Not recorded"}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {workflowRecord.status === "APPROVED" && (
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-sm">
+                    <p className="font-semibold">Completion requirements</p>
+                    <p className="mt-1 text-muted-foreground">The server also checks the confirmed last day, pending disputes or investigations, all required tasks, verified access outcomes, school membership state, and a paid settlement with payment evidence. If completion is blocked, the server response identifies the next requirement.</p>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </section>
+      )}
+
+      {showCreate && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/35 p-4 py-8" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setShowCreate(false); }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="offboarding-create-title" className="w-full max-w-3xl rounded-2xl border border-border bg-background shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-border p-5">
+              <div><p className="text-xs font-semibold uppercase tracking-wider text-primary">Employment &amp; Insights</p><h2 id="offboarding-create-title" className="mt-1 text-xl font-semibold">Create offboarding case</h2><p className="mt-1 text-sm text-muted-foreground">The case starts as a draft. Employee status is not changed until final completion.</p></div>
+              <button type="button" className={secondaryButtonClass} aria-label="Close form" onClick={() => setShowCreate(false)} disabled={saving}><X className="size-4" /></button>
+            </div>
+            <form onSubmit={createCase} className="space-y-5 p-5">
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-1.5 text-sm font-medium md:col-span-2">Employee
+                  <select required className={inputClass} value={selectedStaffId} onChange={(event) => setSelectedStaffId(event.target.value)}>
+                    <option value="">Select an employee…</option>
+                    {eligibleStaff.map((member) => <option key={member.id} value={member.id}>{employeeName(member)} · {member.employeeNumber}{member.jobTitle ? ` · ${member.jobTitle}` : ""}</option>)}
+                  </select>
+                  {eligibleStaff.length === 0 && <span className="block text-xs font-normal text-muted-foreground">No eligible employees found. Existing active cases and terminated employees are excluded.</span>}
+                </label>
+                <label className="space-y-1.5 text-sm font-medium">Exit type
+                  <select className={inputClass} value={exitType} onChange={(event) => setExitType(event.target.value)}>{exitTypes.map(([value, text]) => <option key={value} value={value}>{text}</option>)}</select>
+                </label>
+                <label className="space-y-1.5 text-sm font-medium">Initiated by
+                  <select className={inputClass} value={initiator} onChange={(event) => setInitiator(event.target.value)}><option value="EMPLOYEE">Employee</option><option value="SCHOOL">School</option><option value="MUTUAL">Mutual agreement</option></select>
+                </label>
+                <label className="space-y-1.5 text-sm font-medium">Reason category
+                  <input className={inputClass} maxLength={120} value={reasonCategory} onChange={(event) => setReasonCategory(event.target.value)} placeholder="e.g. Career change" />
+                </label>
+                <label className="space-y-1.5 text-sm font-medium">Proposed last working day
+                  <input type="date" className={inputClass} value={proposedLastDay} onChange={(event) => setProposedLastDay(event.target.value)} />
+                </label>
+                <label className="space-y-1.5 text-sm font-medium">Notice date
+                  <input type="date" className={inputClass} value={noticeDate} onChange={(event) => setNoticeDate(event.target.value)} />
+                </label>
+                <div className="flex flex-col justify-center gap-3 rounded-xl border border-border p-3">
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="size-4 accent-primary" checked={noticeRequired} onChange={(event) => setNoticeRequired(event.target.checked)} /> Notice period required</label>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="size-4 accent-primary" checked={noticeGiven} onChange={(event) => setNoticeGiven(event.target.checked)} /> Notice has been given</label>
+                </div>
+                <div className="flex flex-col justify-center gap-3 rounded-xl border border-border p-3">
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="size-4 accent-primary" checked={disputePending} onChange={(event) => setDisputePending(event.target.checked)} /> Dispute pending</label>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="size-4 accent-primary" checked={investigationPending} onChange={(event) => setInvestigationPending(event.target.checked)} /> Investigation pending</label>
+                </div>
+                <label className="space-y-1.5 text-sm font-medium md:col-span-2">Reason and handover context
+                  <textarea className="min-h-24 w-full rounded-xl border border-border bg-background p-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10" maxLength={2000} value={reasonNotes} onChange={(event) => setReasonNotes(event.target.value)} placeholder="Document the relevant reason and operational context." />
+                  <span className="block text-xs font-normal text-muted-foreground">Avoid unnecessary sensitive personal details. Confidential case notes are not collected in this general form.</span>
+                </label>
+              </div>
+              <div className="flex flex-col-reverse justify-end gap-2 border-t border-border pt-4 sm:flex-row">
+                <button type="button" className={secondaryButtonClass} onClick={() => setShowCreate(false)} disabled={saving}>Cancel</button>
+                <button type="submit" className={buttonClass} disabled={saving || !selectedStaffId}>{saving && <LoaderCircle className="size-4 animate-spin" />}Create draft</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {actionRecord && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/35 p-4 py-8" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setActionRecord(null); }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="offboarding-action-title" className="w-full max-w-xl rounded-2xl border border-border bg-background shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-border p-5">
+              <div><p className="text-xs font-semibold uppercase tracking-wider text-primary">Workflow transition</p><h2 id="offboarding-action-title" className="mt-1 text-xl font-semibold">{label(actionType)} case</h2><p className="mt-1 text-sm text-muted-foreground">{employeeName(actionRecord.staffProfile)} · {actionRecord.staffProfile.employeeNumber}</p></div>
+              <button type="button" className={secondaryButtonClass} aria-label="Close action" onClick={() => setActionRecord(null)} disabled={saving}><X className="size-4" /></button>
+            </div>
+            <form onSubmit={runAction} className="space-y-4 p-5">
+              {actionType === "approve" && <>
+                <label className="block space-y-1.5 text-sm font-medium">Confirmed last working day
+                  <input type="date" required className={inputClass} value={actionDate} onChange={(event) => setActionDate(event.target.value)} />
+                </label>
+                <label className="block space-y-1.5 text-sm font-medium">Rehire eligibility
+                  <select className={inputClass} value={rehireEligible} onChange={(event) => setRehireEligible(event.target.value)}><option value="unset">Leave undecided</option><option value="yes">Eligible for rehire</option><option value="no">Not eligible for rehire</option></select>
+                </label>
+              </>}
+              {actionType === "reject" && <label className="block space-y-1.5 text-sm font-medium">Rejection reason
+                <textarea required minLength={3} maxLength={1000} className="min-h-24 w-full rounded-xl border border-border bg-background p-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10" value={actionReason} onChange={(event) => setActionReason(event.target.value)} placeholder="Explain why the case is being rejected." />
+              </label>}
+              {actionType === "complete" && <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-sm"><p className="font-semibold">Final completion</p><p className="mt-1 text-muted-foreground">This action will terminate the employee record only after the server verifies required clearance tasks, access revocation outcomes, school membership state, and a paid final settlement. Access must be revoked and verified through the dedicated access workflow first.</p><p className="mt-2 font-medium">Confirmed last day: {formatDate(actionRecord.confirmedLastDay)}</p></div>}
+              {actionType === "withdraw" && <p className="text-sm text-muted-foreground">Withdraw this case from the active workflow? The employee status will not be changed.</p>}
+              {actionType === "submit" && <p className="text-sm text-muted-foreground">Submit this draft for review.</p>}
+              {actionType === "review" && <p className="text-sm text-muted-foreground">Move this submitted case into review so it can be approved or rejected.</p>}
+              <div className="flex flex-col-reverse justify-end gap-2 border-t border-border pt-4 sm:flex-row">
+                <button type="button" className={secondaryButtonClass} onClick={() => setActionRecord(null)} disabled={saving}>Cancel</button>
+                <button type="submit" className={buttonClass} disabled={saving}>{saving && <LoaderCircle className="size-4 animate-spin" />}{label(actionType)} case <ArrowUpRight className="size-4" /></button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
